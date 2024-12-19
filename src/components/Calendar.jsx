@@ -1,4 +1,3 @@
-// Calendar.jsx
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import Fullcalendar from "@fullcalendar/react";
@@ -7,7 +6,7 @@ import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import { Modal, Button, Form } from "react-bootstrap";
 import "bootstrap/dist/css/bootstrap.min.css";
-import { Link } from "react-router-dom"; // Importiere Link für die Navigation
+import { Link } from "react-router-dom";
 
 function Calendar() {
   const [events, setEvents] = useState([]);
@@ -19,6 +18,8 @@ function Calendar() {
     event: null,
   });
   const [isExam, setIsExam] = useState(false);
+  const [learningDays, setLearningDays] = useState(0);
+  const [learningDuration, setLearningDuration] = useState(15); // Default 15 Minuten
 
   useEffect(() => {
     fetchEvents();
@@ -65,15 +66,13 @@ function Calendar() {
     const title = formData.get("title");
     const start = formData.get("start");
     let end = formData.get("end");
-  
-    // Wenn kein Endzeitpunkt angegeben, setze einen Standard-Endzeitpunkt (1 Stunde nach Start)
+
     if (!end) {
-      end = new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString(); // 1 Stunde nach Start
+      end = new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString();
     }
-  
-    // Wenn es sich um einen Test handelt, hole die Importance
-    const importance = isExam ? formData.get("importance") : null;
-  
+
+    const importance = isExam ? parseInt(formData.get("importance")) : null;
+
     const eventData = {
       title,
       start,
@@ -81,15 +80,14 @@ function Calendar() {
       isExam,
       ...(isExam ? { importance, backgroundColor: "red" } : {}),
     };
-  
+
     const axiosMethod = modalData.isEdit ? axios.put : axios.post;
     const url = modalData.isEdit
       ? `http://localhost:5000/api/events/${modalData.event.id}`
       : "http://localhost:5000/api/events";
-  
+
     axiosMethod(url, eventData)
       .then((response) => {
-        // Wenn es sich um einen Test handelt, generiere Study-Events
         if (isExam) {
           generateStudyEvents(response.data, importance);
         }
@@ -98,89 +96,80 @@ function Calendar() {
       })
       .catch((err) => {
         if (err.response && err.response.data && err.response.data.error) {
-          alert(err.response.data.error); // Zeige die Fehlermeldung an
+          alert(err.response.data.error);
         } else {
           console.error("Error saving event:", err);
         }
       });
   };
-  
-  
+
   const generateStudyEvents = (exam, importance) => {
-    const daysToExam = Math.ceil((new Date(exam.start) - new Date()) / (1000 * 60 * 60 * 24)); // Berechne die Tage bis zur Prüfung
+    const daysToExam = learningDays || Math.ceil((new Date(exam.start) - new Date()) / (1000 * 60 * 60 * 24));
     const studyEvents = [];
-  
-    // Überprüfen, ob zu einem bestimmten Zeitpunkt bereits ein anderes Event existiert
+
+    const learningInterval =
+      importance <= 20 ? 3 : importance <= 50 ? 2 : 1;
+
     const checkForEventConflict = (startDate) => {
-      return events.some(event => {
-        // Wenn das Startdatum des Events mit dem der Study-Events überlappt, gibt es einen Konflikt
+      return events.some((event) => {
         const eventStart = new Date(event.start);
         const eventEnd = new Date(event.end);
         const studyEventStart = new Date(startDate);
-  
-        return studyEventStart >= eventStart && studyEventStart <= eventEnd;
+
+        return (
+          studyEventStart >= eventStart &&
+          studyEventStart <= eventEnd
+        );
       });
     };
-  
-    // Die Events generieren
-    for (let i = 1; i <= daysToExam; i++) {
-      if (i % Math.ceil(100 / importance) === 0) {
-        let studyEventStart = new Date(new Date().setDate(new Date().getDate() + i));
-        let studyEventEnd = new Date(new Date(studyEventStart).setHours(studyEventStart.getHours() + 1)); // 1 Stunde für das Study-Event
-  
-        // Solange es eine Kollision gibt, verschiebe das Study-Event auf den nächsten freien Zeitpunkt am selben Tag
-        while (checkForEventConflict(studyEventStart)) {
-          // Wenn es zu einer Kollision kommt, versuche das Study-Event eine Stunde nach hinten zu verschieben
-          studyEventStart = new Date(studyEventStart.setHours(studyEventStart.getHours() + 1));
-          studyEventEnd = new Date(new Date(studyEventStart).setHours(studyEventStart.getHours() + 1)); // Update Endzeit
-        }
-  
-        // Study-Event erstellen
-        studyEvents.push({
-          title: `Study for ${exam.title}`,
-          start: studyEventStart.toISOString(),
-          end: studyEventEnd.toISOString(),
-          backgroundColor: "blue", // Die Farbe der Study-Events
-        });
+
+    for (let i = learningInterval; i <= daysToExam; i += learningInterval) {
+      let studyEventStart = new Date(new Date().setDate(new Date().getDate() + i));
+      let studyEventEnd = new Date(
+        new Date(studyEventStart).setMinutes(studyEventStart.getMinutes() + learningDuration)
+      );
+
+      while (checkForEventConflict(studyEventStart)) {
+        studyEventStart = new Date(
+          studyEventStart.setHours(studyEventStart.getHours() + 1)
+        );
+        studyEventEnd = new Date(
+          new Date(studyEventStart).setMinutes(studyEventStart.getMinutes() + learningDuration)
+        );
       }
+
+      studyEvents.push({
+        title: `Study for ${exam.title}`,
+        start: studyEventStart.toISOString(),
+        end: studyEventEnd.toISOString(),
+        backgroundColor: "blue",
+      });
     }
-  
+
     if (studyEvents.length > 0) {
-      // Die Study-Events in die Datenbank posten
-      axios.post("http://localhost:5000/api/events/bulk", studyEvents)
+      axios
+        .post("http://localhost:5000/api/events/bulk", studyEvents)
         .then(() => {
           console.log("Study events successfully created.");
-          fetchEvents(); // Events nach dem Erstellen der Study-Events erneut laden
+          fetchEvents();
         })
         .catch((err) => {
           console.error("Error generating study events:", err);
         });
     }
   };
-  
-  
-  
-  const updateStudyEvents = (exam) => {
-    axios
-      .get(`http://localhost:5000/api/events/related/${exam.id}`)
-      .then((response) => {
-        const studyEvents = response.data;
-        const updatedEvents = studyEvents.map((event) => ({
-          ...event,
-          title: `Study for ${exam.title}`,
-        }));
-
-        axios
-          .put("http://localhost:5000/api/events/bulk", updatedEvents)
-          .then(fetchEvents)
-          .catch((err) => console.error("Error updating study events:", err));
-      })
-      .catch((err) => console.error("Error fetching related events:", err));
-  };
 
   const handleModalClose = () => {
-    setModalData({ show: false, start: null, end: null, isEdit: false, event: null });
+    setModalData({
+      show: false,
+      start: null,
+      end: null,
+      isEdit: false,
+      event: null,
+    });
     setIsExam(false);
+    setLearningDays(0);
+    setLearningDuration(15);
   };
 
   const handleDeleteEvent = () => {
@@ -204,7 +193,11 @@ function Calendar() {
     const updatedEvent = events.find((event) => event.id === eventId);
     if (updatedEvent) {
       updatedEvent.isCompleted = !updatedEvent.isCompleted;
-      updatedEvent.backgroundColor = updatedEvent.isCompleted ? "green" : updatedEvent.isExam ? "red" : "blue";
+      updatedEvent.backgroundColor = updatedEvent.isCompleted
+        ? "green"
+        : updatedEvent.isExam
+        ? "red"
+        : "blue";
 
       axios
         .put(`http://localhost:5000/api/events/${eventId}`, updatedEvent)
@@ -215,9 +208,9 @@ function Calendar() {
 
   return (
     <div>
-        <Link to="/">
-          <Button variant="secondary">Back to Home</Button>
-        </Link>
+      <Link to="/">
+        <Button variant="secondary">Back to Home</Button>
+      </Link>
       <Fullcalendar
         plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
         initialView={"dayGridMonth"}
@@ -230,7 +223,7 @@ function Calendar() {
         events={events}
         dateClick={handleDateClick}
         eventClick={(info) => {
-          toggleEventCompletion(info.event.id); // Als erledigt markieren
+          toggleEventCompletion(info.event.id);
           setModalData({
             show: true,
             start: formatDateTime(info.event.start),
@@ -242,10 +235,12 @@ function Calendar() {
         editable={true}
         firstDay={1}
       />
-      <Modal show={modalData.show} onHide={handleModalClose}>
+<Modal show={modalData.show} onHide={handleModalClose}>
         <Form onSubmit={handleSaveEvent}>
           <Modal.Header closeButton>
-            <Modal.Title>{modalData.isEdit ? "Edit Event" : "Add Event"}</Modal.Title>
+            <Modal.Title>
+              {modalData.isEdit ? "Edit Event" : "Add Event"}
+            </Modal.Title>
           </Modal.Header>
           <Modal.Body>
             <Form.Group className="mb-3">
@@ -261,7 +256,11 @@ function Calendar() {
               <Form.Control
                 type="datetime-local"
                 name="start"
-                defaultValue={modalData.isEdit ? formatDateTime(modalData.event.start) : modalData.start}
+                defaultValue={
+                  modalData.isEdit
+                    ? formatDateTime(modalData.event.start)
+                    : modalData.start
+                }
                 required
               />
             </Form.Group>
@@ -274,35 +273,30 @@ function Calendar() {
               />
             </Form.Group>
             <Form.Group className="mb-3">
-            <Form.Check
-              type="checkbox"
-              label="Is this an exam?"
-              onChange={(e) => setIsExam(e.target.checked)}
-            />
-          </Form.Group>
-
-          {isExam && (
-            <Form.Group className="mb-3">
-              <Form.Label>Importance (1-100)</Form.Label>
-              <Form.Control type="number" name="importance" min="1" max="100" required />
+              <Form.Check
+                type="checkbox"
+                label="Is this an exam?"
+                onChange={(e) => setIsExam(e.target.checked)}
+              />
             </Form.Group>
-          )}
+            {isExam && (
+              <>
+                <Form.Group className="mb-3">
+                  <Form.Label>Importance (1-100)</Form.Label>
+                  <Form.Control type="number" name="importance" min="1" max="100" required />
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>Days Before Exam</Form.Label>
+                  <Form.Control type="number" name="daysBeforeExam" min="1" required />
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label>Study Duration (Minutes)</Form.Label>
+                  <Form.Control type="number" name="durationMinutes" min="15" required />
+                </Form.Group>
+              </>
+            )}
           </Modal.Body>
           <Modal.Footer>
-            {modalData.isEdit && (
-              <Button
-                variant="success"
-                onClick={() => {
-                  toggleEventCompletion(modalData.event.id);
-                  handleModalClose();
-                }}
-              >
-                Mark as Completed
-              </Button>
-            )}
-            <Button variant="danger" onClick={handleDeleteEvent}>
-              Delete
-            </Button>
             <Button variant="secondary" onClick={handleModalClose}>
               Close
             </Button>
