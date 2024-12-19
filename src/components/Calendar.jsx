@@ -65,16 +65,13 @@ function Calendar() {
     const title = formData.get("title");
     const start = formData.get("start");
     let end = formData.get("end");
-    const daysBefore = isExam ? parseInt(formData.get("daysBefore"), 10) : 0;
-    const studyDuration = isExam ? parseInt(formData.get("studyDuration"), 10) : 0;
+    const importance = isExam ? parseInt(formData.get("importance"), 10) : null;
+    const daysBefore = isExam ? parseInt(formData.get("daysBefore"), 10) : null;
+    const sessionDuration = isExam ? parseInt(formData.get("sessionDuration"), 10) : null;
 
-    // Wenn kein Endzeitpunkt angegeben, setze einen Standard-Endzeitpunkt (1 Stunde nach Start)
     if (!end) {
       end = new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString();
     }
-
-    // Wenn es sich um einen Test handelt, hole die Importance
-    const importance = isExam ? parseInt(formData.get("importance"), 10) : null;
 
     const eventData = {
       title,
@@ -91,54 +88,46 @@ function Calendar() {
 
     axiosMethod(url, eventData)
       .then((response) => {
-        // Wenn es sich um einen Test handelt, generiere Study-Events
         if (isExam) {
-          generateStudyEvents(response.data, importance, daysBefore, studyDuration);
+          generateStudyEvents(response.data, importance, daysBefore, sessionDuration);
         }
         fetchEvents();
         handleModalClose();
       })
       .catch((err) => {
         if (err.response && err.response.data && err.response.data.error) {
-          alert(err.response.data.error); // Zeige die Fehlermeldung an
+          alert(err.response.data.error);
         } else {
           console.error("Error saving event:", err);
         }
       });
   };
 
-  const generateStudyEvents = (exam, importance, daysBefore, studyDuration) => {
-    const studyInterval = importance <= 20 ? 3 : importance <= 50 ? 2 : 1; // Intervall in Tagen
+  const generateStudyEvents = (exam, importance, daysBefore, sessionDuration) => {
+    const daysToExam = Math.ceil((new Date(exam.start) - new Date()) / (1000 * 60 * 60 * 24));
+    const startGeneratingFrom = Math.max(0, daysToExam - daysBefore);
+    const interval =
+      importance <= 20 ? 3 : importance <= 50 ? 2 : 1;
     const studyEvents = [];
 
-    // Berechnung der Startzeit für Lerntermine
     const checkForEventConflict = (startDate) => {
       return events.some((event) => {
         const eventStart = new Date(event.start);
         const eventEnd = new Date(event.end);
         const studyEventStart = new Date(startDate);
-
-        return studyEventStart >= eventStart && studyEventStart <= eventEnd;
+        return studyEventStart >= eventStart && studyEventStart < eventEnd;
       });
     };
 
-    const examStart = new Date(exam.start);
-    for (let i = 0; i < daysBefore; i += studyInterval) {
-      let studyEventStart = new Date(examStart);
-      studyEventStart.setDate(examStart.getDate() - i);
-      studyEventStart.setHours(9, 0, 0, 0); // Standardstartzeit: 9:00 Uhr
+    for (let i = startGeneratingFrom; i < daysToExam; i += interval) {
+      let studyEventStart = new Date(new Date().setDate(new Date().getDate() + i));
+      let studyEventEnd = new Date(new Date(studyEventStart).getTime() + sessionDuration * 60 * 1000);
 
-      let studyEventEnd = new Date(studyEventStart);
-      studyEventEnd.setMinutes(studyEventStart.getMinutes() + studyDuration);
-
-      // Kollision vermeiden
       while (checkForEventConflict(studyEventStart)) {
-        studyEventStart.setHours(studyEventStart.getHours() + 1);
-        studyEventEnd = new Date(studyEventStart);
-        studyEventEnd.setMinutes(studyEventStart.getMinutes() + studyDuration);
+        studyEventStart.setMinutes(studyEventStart.getMinutes() + sessionDuration);
+        studyEventEnd.setMinutes(studyEventStart.getMinutes() + sessionDuration);
       }
 
-      // Study-Event hinzufügen
       studyEvents.push({
         title: `Study for ${exam.title}`,
         start: studyEventStart.toISOString(),
@@ -148,13 +137,14 @@ function Calendar() {
     }
 
     if (studyEvents.length > 0) {
-      axios
-        .post("http://localhost:5000/api/events/bulk", studyEvents)
+      axios.post("http://localhost:5000/api/events/bulk", studyEvents)
         .then(() => {
           console.log("Study events successfully created.");
           fetchEvents();
         })
-        .catch((err) => console.error("Error generating study events:", err));
+        .catch((err) => {
+          console.error("Error generating study events:", err);
+        });
     }
   };
 
@@ -169,12 +159,27 @@ function Calendar() {
         .delete(`http://localhost:5000/api/events/${modalData.event.id}`)
         .then(() => {
           if (modalData.event.isExam) {
-            axios.delete(`http://localhost:5000/api/events/related/${modalData.event.id}`).then(fetchEvents);
+            axios
+              .delete(`http://localhost:5000/api/events/related/${modalData.event.id}`)
+              .then(fetchEvents);
           }
           fetchEvents();
           handleModalClose();
         })
         .catch((err) => console.error("Error deleting event:", err));
+    }
+  };
+
+  const toggleEventCompletion = (eventId) => {
+    const updatedEvent = events.find((event) => event.id === eventId);
+    if (updatedEvent) {
+      updatedEvent.isCompleted = !updatedEvent.isCompleted;
+      updatedEvent.backgroundColor = updatedEvent.isCompleted ? "green" : updatedEvent.isExam ? "red" : "blue";
+
+      axios
+        .put(`http://localhost:5000/api/events/${eventId}`, updatedEvent)
+        .then(fetchEvents)
+        .catch((err) => console.error("Error updating completion:", err));
     }
   };
 
@@ -195,6 +200,7 @@ function Calendar() {
         events={events}
         dateClick={handleDateClick}
         eventClick={(info) => {
+          toggleEventCompletion(info.event.id);
           setModalData({
             show: true,
             start: formatDateTime(info.event.start),
@@ -252,12 +258,12 @@ function Calendar() {
                   <Form.Control type="number" name="importance" min="1" max="100" required />
                 </Form.Group>
                 <Form.Group className="mb-3">
-                  <Form.Label>Days before the exam to study</Form.Label>
+                  <Form.Label>Days Before to Start Studying</Form.Label>
                   <Form.Control type="number" name="daysBefore" min="1" required />
                 </Form.Group>
                 <Form.Group className="mb-3">
-                  <Form.Label>Study duration (in minutes)</Form.Label>
-                  <Form.Control type="number" name="studyDuration" min="15" required />
+                  <Form.Label>Study Session Duration (minutes)</Form.Label>
+                  <Form.Control type="number" name="sessionDuration" min="15" required />
                 </Form.Group>
               </>
             )}
